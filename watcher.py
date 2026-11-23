@@ -1,4 +1,4 @@
-"""Hayes Watcher v1.0 - bao Telegram khi vi Arthur Hayes co giao dich lien quan ETH/BTC.
+"""Hayes Watcher v1.1 - bao Telegram khi vi Arthur Hayes co giao dich lien quan ETH/BTC.
 
 Chi bao khi trong giao dich co ETH hoac BTC (ban goc / ban "boc" tren Ethereum) di chuyen:
   - MUA / BAN ETH-BTC (swap voi coin khac)
@@ -30,6 +30,11 @@ TRACKED = {
     "0xae7ab96520de3a18e5e111b5eaab095312d7fe84": ("stETH", "ETH"),
     "0x7f39c581f595b53c5cb19bd0b3f8da6c935e2ca0": ("wstETH", "ETH"),
     "0xcd5fe23c85820f7b72d0926fc9b05b43e359b7ee": ("weETH", "ETH"),
+    "0x35fa164735182de50811e8e2e824cfb9b6118ac2": ("eETH", "ETH"),
+    "0xbf5495efe5db9ce00f80364c8b423567e58d2110": ("ezETH", "ETH"),
+    "0xa1290d69c65a6fe4df752f95823fae25cb99e5a7": ("rsETH", "ETH"),
+    "0xae78736cd615f374d3085123a210448e74fc6393": ("rETH", "ETH"),
+    "0xbe9895146f7af43049ca1c1ae358b0541ea49704": ("cbETH", "ETH"),
     "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599": ("WBTC", "BTC"),
     "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf": ("cbBTC", "BTC"),
     "0x18084fba666a33d37592fa2633fd49a74dd93a88": ("tBTC", "BTC"),
@@ -51,6 +56,7 @@ EXCHANGE_WORDS = [
     "exchange", "hot wallet", "deposit",
 ]
 
+VERSION = "v1.1"
 CHAIN_ID = "1"  # Ethereum
 EXPLORER_TX = "https://etherscan.io/tx/"
 EXPLORER_ADDR = "https://etherscan.io/address/"
@@ -71,7 +77,7 @@ V2_BASE = "https://eth.blockscout.com/api/v2"
 
 
 def http_get_json(url, timeout=25):
-    req = urllib.request.Request(url, headers={"User-Agent": "hayes-watcher/1.0"})
+    req = urllib.request.Request(url, headers={"User-Agent": "hayes-watcher/1.1"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode())
 
@@ -140,6 +146,32 @@ def eth_balance(addr):
     except Exception as e:
         print("  khong lay duoc so du:", e)
         return None
+
+
+def holdings_text(addr, prices):
+    """Tong so du ETH goc + cac token ETH/BTC that (bo qua token = 0)."""
+    lines, total = [], 0.0
+    bal = eth_balance(addr)
+    items = [("ETH", "ETH", bal)]
+    for ca, (sym, grp) in TRACKED.items():
+        try:
+            raw = api_raw({"module": "account", "action": "tokenbalance",
+                           "contractaddress": ca, "address": addr})
+            dec = 8 if grp == "BTC" else 18
+            items.append((sym, grp, int(raw) / 10 ** dec))
+        except Exception as e:
+            print("  khong lay duoc so du", sym, e)
+    for sym, grp, amt in items:
+        if amt is None or amt <= 0:
+            continue
+        s = f"• {fmt_num(amt)} {sym}"
+        if grp in prices:
+            usd = amt * prices[grp]
+            total += usd
+            s += f" (~{fmt_usd(usd)})"
+        lines.append(s)
+    head = f"💰 Đang giữ (ETH/BTC): ~{fmt_usd(total)}" if total else "💰 Đang giữ (ETH/BTC):"
+    return head + "\n" + ("\n".join(lines) or "• (không lấy được số dư)")
 
 
 def get_prices():
@@ -386,18 +418,23 @@ def check_wallet(cfg, ws, labels, prices):
     wallet = cfg["address"].lower()
     name = cfg["name"]
     if not ws.get("started"):
-        bal = eth_balance(wallet)
-        bal_txt = f"{fmt_num(bal)} ETH" if bal is not None else "?"
-        if bal is not None and "ETH" in prices:
-            bal_txt += f" (~{fmt_usd(bal * prices['ETH'])})"
         send_telegram(
             f"✅ <b>Đã bật theo dõi: {html.escape(name)}</b>\n"
             f'Ví <a href="{EXPLORER_ADDR}{wallet}">{short(wallet)}</a> (Ethereum)\n'
-            f"💰 Số dư ETH hiện tại: {bal_txt}\n"
+            f"{holdings_text(wallet, prices)}\n"
             f"Chỉ báo giao dịch ETH/BTC: mua bán, swap, nạp rút sàn "
             f"(từ {MIN_ETH} ETH / {MIN_BTC} BTC trở lên)."
         )
         ws["started"] = True
+        ws["version"] = VERSION
+    elif ws.get("version") != VERSION:
+        # Bao 1 lan khi cap nhat code: so du day du (ca token ETH/BTC)
+        send_telegram(
+            f"🔧 <b>Bot đã cập nhật {VERSION}</b> · {html.escape(name)}\n"
+            f"Đã thêm theo dõi eETH (ether.fi) và các ETH stake khác.\n"
+            f"{holdings_text(wallet, prices)}"
+        )
+        ws["version"] = VERSION
 
     start = ws["last_block"] + 1
     txs, toks, ints = fetch(wallet, start)
